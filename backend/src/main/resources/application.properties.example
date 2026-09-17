@@ -1,0 +1,10 @@
+# Copy this file's contents into your shell/OS environment variables.
+# Do NOT put real values directly into a committed .properties file.
+
+# Example (Supabase -> Project Settings -> Database -> Connection string, JDBC/URI form):
+DB_URL=jdbc:postgresql://<your-project-ref>.supabase.co:5432/postgres
+DB_USER=postgres
+DB_PASSWORD=<your-db-password>
+
+# Optional - defaults to http://localhost:5173 if not set
+CORS_ALLOWED_ORIGIN=http://localhost:5173
