@@ -93,17 +93,14 @@ App runs on `http://localhost:5173`.
 
 ### Network tab evidence
 
-**Multi-item order, CONFIRMED:**
-![Multi-item confirmed](docs/multi-confirmed.png)
+The screenshot below shows the Network tab across all four required
+scenarios in one combined capture: a multi-item order that succeeds
+(CONFIRMED), a multi-item order where one item fails and the whole order
+is REJECTED with no partial reservation, an order cancellation with the
+resulting restock reflected in the Inventory table, and the Activity Feed
+showing confirmed, rejected, and low-stock notification entries.
 
-**Multi-item order, REJECTED (no partial reservation):**
-![Multi-item rejected](docs/multi-rejected.png)
-
-**Cancel + restock reflected in GET /api/inventory:**
-![Cancel and restock](docs/cancel-restock.png)
-
-**Notification feed (confirmed, rejected, low-stock):**
-![Notification feed](docs/notifications.png)
+![Network tab evidence](docs/network-evidence.png)
 
 ---
 
