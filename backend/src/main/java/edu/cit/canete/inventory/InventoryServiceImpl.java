@@ -6,7 +6,8 @@ import java.util.NoSuchElementException;
 import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
-
+import edu.cit.canete.supplier.SupplierGateway;
+import edu.cit.canete.supplier.ReorderResult;
 import edu.cit.canete.inventory.event.LowStockEvent;
 
 /**
@@ -18,12 +19,16 @@ import edu.cit.canete.inventory.event.LowStockEvent;
 class InventoryServiceImpl implements InventoryService {
 
     private static final int LOW_STOCK_THRESHOLD = 5;
+    private static final int TARGET_RESTOCK_LEVEL = 50;
 
     private final InventoryRepository repository;
+    private final SupplierGateway supplierGateway;
     private final ApplicationEventPublisher events;
 
-    InventoryServiceImpl(InventoryRepository repository, ApplicationEventPublisher events) {
+    // INJECT SupplierGateway here
+    InventoryServiceImpl(InventoryRepository repository, SupplierGateway supplierGateway, ApplicationEventPublisher events) {
         this.repository = repository;
+        this.supplierGateway = supplierGateway;
         this.events = events;
     }
 
@@ -45,11 +50,21 @@ class InventoryServiceImpl implements InventoryService {
         if (item.getStock() < quantity) {
             return false;
         }
+        
         item.setStock(item.getStock() - quantity);
         repository.save(item);
 
         if (item.getStock() < LOW_STOCK_THRESHOLD) {
+            // Keep the existing notification event
             events.publishEvent(new LowStockEvent(item.getProductId(), item.getName(), item.getStock()));
+            
+            // Trigger the automated supplier reorder
+            int unitsNeeded = TARGET_RESTOCK_LEVEL - item.getStock();
+            ReorderResult result = supplierGateway.reorder(item.getProductId(), unitsNeeded);
+            
+            System.out.println("Triggered reorder for " + item.getProductId() + 
+                               ", Units needed: " + unitsNeeded + 
+                               ", Result: " + result);
         }
         return true;
     }

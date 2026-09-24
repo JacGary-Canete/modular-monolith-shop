@@ -35,6 +35,19 @@ create table notifications (
     created_at timestamptz not null default now()
 );
 
+create table supplier_orders (
+    id bigserial primary key,
+    product_id varchar(20) not null references inventory(product_id),
+    buyer_ref varchar(40) not null unique,
+    request_id varchar(80) not null unique,
+    po_number varchar(40),
+    cases integer not null,
+    units integer not null,
+    status varchar(20) not null,
+    created_at timestamptz not null default now(),
+    updated_at timestamptz not null default now()
+);
+
 -- RLS enabled on all tables. No policies are defined because the backend
 -- connects via a direct Postgres connection (JDBC/pooler) using the
 -- postgres role, which bypasses RLS. This only matters if something
@@ -44,7 +57,7 @@ alter table inventory enable row level security;
 alter table orders enable row level security;
 alter table order_items enable row level security;
 alter table notifications enable row level security;
-
+alter table supplier_orders enable row level security;
 -- Seed data
 insert into inventory (product_id, name, stock) values
     ('P100', 'Wireless Mouse', 25),
