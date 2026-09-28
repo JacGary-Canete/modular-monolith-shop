@@ -19,6 +19,8 @@ import edu.cit.canete.supplier.event.SupplierOrderDeliveredEvent;
 class SupplierDeliveryTrackerJob {
 
     private static final String BASE_URL = "https://legacysupply.onrender.com/api/v1";
+    private static final int MAX_CONSECUTIVE_FAILURES = 2;
+
     private final SupplierOrderRepository repository;
     private final LegacySupplySessionManager sessionManager;
     private final ApplicationEventPublisher events;
@@ -43,6 +45,8 @@ class SupplierDeliveryTrackerJob {
         if (openOrders.isEmpty()) return;
         System.out.println("Tracking delivery status for " + openOrders.size() + " open orders.");
 
+        int consecutiveFailures = 0;
+
         for (SupplierOrder order : openOrders) {
             if (order.getPoNumber() == null) continue;
 
@@ -59,6 +63,7 @@ class SupplierDeliveryTrackerJob {
                 int http = response.statusCode();
 
                 if (http == 200) {
+                    consecutiveFailures = 0;
                     String code = XmlUtil.extractTag(response.body(), "StatusCode");
                     SupplierOrderStatus mapped = mapLegacyStatus(code);
 
@@ -82,6 +87,7 @@ class SupplierDeliveryTrackerJob {
                         }
                     }
                 } else if (http == 404) {
+                    consecutiveFailures = 0;
                     System.out.println("PO " + order.getPoNumber() + " not found at supplier, flagging for review.");
                     order.setStatus(SupplierOrderStatus.NEEDS_REVIEW);
                     repository.save(order);
@@ -92,12 +98,21 @@ class SupplierDeliveryTrackerJob {
                     System.out.println("Rate limited by LegacySupply, skipping the rest of this tick.");
                     break;
                 } else {
-                    System.out.println("Supplier error " + http + " while tracking, skipping the rest of this tick.");
-                    break;
+                    consecutiveFailures++;
+                    System.out.println("Supplier error " + http + " for PO " + order.getPoNumber()
+                            + " (" + consecutiveFailures + " in a row).");
+                    if (consecutiveFailures >= MAX_CONSECUTIVE_FAILURES) {
+                        System.out.println("Two failures in a row, stopping this tick.");
+                        break;
+                    }
                 }
             } catch (Exception e) {
-                System.out.println("Tracking failed (" + e.getClass().getSimpleName() + "), skipping the rest of this tick.");
-                break; // supplier unreachable: don't burn quota on the remaining orders
+                consecutiveFailures++;
+                System.out.println("Tracking failed (" + e.getClass().getSimpleName() + "), "
+                        + consecutiveFailures + " in a row.");
+                if (consecutiveFailures >= MAX_CONSECUTIVE_FAILURES) {
+                    break; // supplier unreachable, don't burn quota
+                }
             }
         }
     }
