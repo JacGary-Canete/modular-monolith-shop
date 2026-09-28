@@ -14,7 +14,7 @@ import edu.cit.canete.supplier.xml.XmlUtil;
 @Configuration
 @EnableScheduling
 class SupplierRetryJob {
-    
+
     private static final String BASE_URL = "https://legacysupply.onrender.com/api/v1";
     private final SupplierOrderRepository repository;
     private final LegacySupplySessionManager sessionManager;
@@ -26,44 +26,57 @@ class SupplierRetryJob {
         this.httpClient = HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(3)).build();
     }
 
-    @Scheduled(fixedDelay = 60000) // Polls every 1 minute
+    @Scheduled(fixedDelay = 60000)
     public void retryPendingOrders() {
         List<SupplierOrder> pendingOrders = repository.findByStatus(SupplierOrderStatus.PENDING);
-        
+        if (pendingOrders.isEmpty()) {
+            return;
+        }
+        System.out.println("Retry job: " + pendingOrders.size() + " pending order(s).");
+
         for (SupplierOrder order : pendingOrders) {
             try {
                 String token = sessionManager.getValidSession();
-                String xmlBody = "<PurchaseOrderRequest>" +
+                String xmlBody = "<PurchaseOrder>" +
                         "<SupplierSku>" + XmlUtil.escape(order.getSupplierSku()) + "</SupplierSku>" +
-                        "<Quantity>" + order.getCasesOrdered() + "</Quantity>" +
-                        "<Uom>CS</Uom>" +
+                        "<Qty>" + order.getCasesOrdered() + "</Qty>" +
                         "<BuyerRef>" + XmlUtil.escape(order.getBuyerRef()) + "</BuyerRef>" +
-                        "</PurchaseOrderRequest>";
+                        "</PurchaseOrder>";
 
                 HttpRequest request = HttpRequest.newBuilder()
                         .uri(URI.create(BASE_URL + "/purchase-orders"))
                         .timeout(Duration.ofSeconds(3))
                         .header("Content-Type", "application/xml")
-                        .header("Authorization", "Bearer " + token)
-                        .header("X-Request-Id", order.getRequestId()) // Same UUID to prevent duplicates
+                        .header("X-LS-Session", token)
+                        .header("X-Request-Id", order.getRequestId()) // same id as the first attempt
                         .POST(HttpRequest.BodyPublishers.ofString(xmlBody))
                         .build();
 
                 HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
+                int status = response.statusCode();
 
-                if (response.statusCode() == 201 || response.statusCode() == 200) {
+                if (status == 200 || status == 201) {
                     order.setPoNumber(XmlUtil.extractTag(response.body(), "PoNumber"));
                     order.setStatus(SupplierOrderStatus.ACCEPTED);
                     repository.save(order);
-                } else if (response.statusCode() == 409) {
+                    System.out.println("Retry job: " + order.getBuyerRef() + " accepted.");
+                } else if (status == 409) {
                     order.setStatus(SupplierOrderStatus.ACCEPTED);
                     repository.save(order);
-                } else if (response.statusCode() >= 400 && response.statusCode() < 500 && response.statusCode() != 401) {
+                    System.out.println("Retry job: " + order.getBuyerRef() + " already known (409).");
+                } else if (status == 401) {
+                    sessionManager.forceRefresh(); // stays PENDING, next tick retries
+                } else if (status >= 400 && status < 500) {
+                    System.out.println("Retry job: " + order.getBuyerRef() + " rejected " + status + ": " + response.body());
                     order.setStatus(SupplierOrderStatus.FAILED);
                     repository.save(order);
+                } else {
+                    System.out.println("Retry job: server error " + status + " for " + order.getBuyerRef() + ", will retry.");
                 }
             } catch (Exception e) {
-                // Ignore. It remains PENDING and will be retried on the next cron execution.
+                System.out.println("Retry job: " + order.getBuyerRef() + " failed: "
+                        + e.getClass().getSimpleName() + " - " + e.getMessage());
+                break; // LegacySupply is unreachable, so skip the rest of this tick
             }
         }
     }

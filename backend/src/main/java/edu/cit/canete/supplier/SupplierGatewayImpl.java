@@ -21,7 +21,6 @@ class SupplierGatewayImpl implements SupplierGateway {
     SupplierGatewayImpl(LegacySupplySessionManager sessionManager, SupplierOrderRepository repository) {
         this.sessionManager = sessionManager;
         this.repository = repository;
-        // PART D: 3-second timeout built into the client
         this.httpClient = HttpClient.newBuilder()
                 .connectTimeout(Duration.ofSeconds(3))
                 .build();
@@ -29,9 +28,8 @@ class SupplierGatewayImpl implements SupplierGateway {
 
     @Override
     public ReorderResult reorder(String productId, int unitsNeeded) {
-        // 1. Map Product to Supplier Sku and Pack Size (Part B)
         String sku;
-        int packSize = 24; 
+        int packSize = 24;
         switch (productId) {
             case "P100": sku = "CTT-5425"; break;
             case "P200": sku = "CTT-2971"; break;
@@ -39,52 +37,50 @@ class SupplierGatewayImpl implements SupplierGateway {
             default: throw new IllegalArgumentException("Unmapped product: " + productId);
         }
 
-        // 2. Convert units to cases, rounding up (Part C)
         int casesNeeded = (int) Math.ceil((double) unitsNeeded / packSize);
 
-        // 3. Save as PENDING first to get the DB ID, preventing lost orders (Part D)
+        String buyerRef = "RO-" + UUID.randomUUID();
+        String requestId = UUID.randomUUID().toString();
+
         SupplierOrder order = new SupplierOrder();
         order.setProductId(productId);
         order.setSupplierSku(sku);
-        order.setUnitsRequested(unitsNeeded);
+        order.setUnitsRequested(casesNeeded * packSize); // units that will actually arrive
         order.setCasesOrdered(casesNeeded);
         order.setStatus(SupplierOrderStatus.PENDING);
         order.setCreatedAt(Instant.now());
-        order = repository.save(order); // Now we have the ID
-
-        // Generate BuyerRef and RequestId as required by instructions
-        String buyerRef = "RO-" + order.getId();
-        String requestId = UUID.randomUUID().toString();
         order.setBuyerRef(buyerRef);
         order.setRequestId(requestId);
-        repository.save(order);
+        order = repository.save(order);
 
-        // 4. API Call with 3 Retries and Backoff (Part D)
         int maxAttempts = 3;
         for (int attempt = 1; attempt <= maxAttempts; attempt++) {
             try {
+                System.out.println("Attempt " + attempt + ": getting session token...");
                 String token = sessionManager.getValidSession();
-                String xmlBody = "<PurchaseOrderRequest>" +
+                System.out.println("Got token, sending PO request for " + sku + " x" + casesNeeded + " cases...");
+
+                String xmlBody = "<PurchaseOrder>" +
                         "<SupplierSku>" + XmlUtil.escape(sku) + "</SupplierSku>" +
-                        "<Quantity>" + casesNeeded + "</Quantity>" +
-                        "<Uom>CS</Uom>" +
+                        "<Qty>" + casesNeeded + "</Qty>" +
                         "<BuyerRef>" + XmlUtil.escape(buyerRef) + "</BuyerRef>" +
-                        "</PurchaseOrderRequest>";
+                        "</PurchaseOrder>";
 
                 HttpRequest request = HttpRequest.newBuilder()
                         .uri(URI.create(BASE_URL + "/purchase-orders"))
-                        .timeout(Duration.ofSeconds(3)) // 3-second timeout per call
+                        .timeout(Duration.ofSeconds(3))
                         .header("Content-Type", "application/xml")
-                        .header("Authorization", "Bearer " + token)
-                        .header("X-Request-Id", requestId) // Idempotency key
+                        .header("X-LS-Session", token)
+                        .header("X-Request-Id", requestId)
                         .POST(HttpRequest.BodyPublishers.ofString(xmlBody))
                         .build();
 
                 HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
 
                 if (response.statusCode() == 401) {
+                    System.out.println("Attempt " + attempt + " got 401, forcing session refresh...");
                     sessionManager.forceRefresh();
-                    continue; // Token expired mid-flight, loop again
+                    continue;
                 }
 
                 if (response.statusCode() == 201 || response.statusCode() == 200) {
@@ -93,26 +89,32 @@ class SupplierGatewayImpl implements SupplierGateway {
                     repository.save(order);
                     return ReorderResult.ACCEPTED;
                 } else if (response.statusCode() == 409) {
-                    // LegacySupply already processed this X-Request-Id (Idempotency saved us)
                     order.setStatus(SupplierOrderStatus.ACCEPTED);
                     repository.save(order);
                     return ReorderResult.ACCEPTED;
                 } else if (response.statusCode() >= 400 && response.statusCode() < 500) {
+                    System.out.println("Attempt " + attempt + " got client error " 
+                        + response.statusCode() + ": " + response.body());
                     order.setStatus(SupplierOrderStatus.FAILED);
                     repository.save(order);
                     return ReorderResult.FAILED;
+                } else {
+                    System.out.println("Attempt " + attempt + " got unexpected status "
+                        + response.statusCode() + ": " + response.body());
                 }
 
             } catch (Exception e) {
-                if (attempt == maxAttempts) break; // Exhausted retries
+                System.out.println("Attempt " + attempt + " failed: " + e.getClass().getSimpleName() + " - " + e.getMessage());
+                if (attempt == maxAttempts) break;
             }
-            
-            // Exponential backoff before retry
-            try { Thread.sleep((long) Math.pow(2, attempt) * 500); } 
-            catch (InterruptedException ie) { Thread.currentThread().interrupt(); }
+
+            try {
+                Thread.sleep((long) Math.pow(2, attempt) * 500);
+            } catch (InterruptedException ie) {
+                Thread.currentThread().interrupt();
+            }
         }
 
-        // Leave PENDING if all retries fail. The background job will pick it up.
-        return ReorderResult.PENDING; 
+        return ReorderResult.PENDING;
     }
 }

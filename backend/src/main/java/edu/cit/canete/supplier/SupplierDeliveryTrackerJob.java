@@ -24,8 +24,8 @@ class SupplierDeliveryTrackerJob {
     private final ApplicationEventPublisher events;
     private final HttpClient httpClient;
 
-    SupplierDeliveryTrackerJob(SupplierOrderRepository repository, 
-                               LegacySupplySessionManager sessionManager, 
+    SupplierDeliveryTrackerJob(SupplierOrderRepository repository,
+                               LegacySupplySessionManager sessionManager,
                                ApplicationEventPublisher events) {
         this.repository = repository;
         this.sessionManager = sessionManager;
@@ -33,16 +33,14 @@ class SupplierDeliveryTrackerJob {
         this.httpClient = HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(3)).build();
     }
 
-    @Scheduled(fixedDelay = 120000) // Poll every 2 minutes to respect quota
+    @Scheduled(fixedDelay = 120000) // every 2 minutes, one GET per open order
     public void trackDeliveries() {
-        // Find all orders that are currently in-flight
         List<SupplierOrder> openOrders = new ArrayList<>();
         openOrders.addAll(repository.findByStatus(SupplierOrderStatus.ACCEPTED));
         openOrders.addAll(repository.findByStatus(SupplierOrderStatus.PICKING));
         openOrders.addAll(repository.findByStatus(SupplierOrderStatus.SHIPPED));
 
         if (openOrders.isEmpty()) return;
-        
         System.out.println("Tracking delivery status for " + openOrders.size() + " open orders.");
 
         for (SupplierOrder order : openOrders) {
@@ -53,50 +51,67 @@ class SupplierDeliveryTrackerJob {
                 HttpRequest request = HttpRequest.newBuilder()
                         .uri(URI.create(BASE_URL + "/purchase-orders/" + order.getPoNumber()))
                         .timeout(Duration.ofSeconds(3))
-                        .header("Authorization", "Bearer " + token)
+                        .header("X-LS-Session", token)
                         .GET()
                         .build();
 
                 HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
+                int http = response.statusCode();
 
-                if (response.statusCode() == 200) {
-                    String legacyStatus = XmlUtil.extractTag(response.body(), "Status");
-                    if (legacyStatus == null) continue;
+                if (http == 200) {
+                    String code = XmlUtil.extractTag(response.body(), "StatusCode");
+                    SupplierOrderStatus mapped = mapLegacyStatus(code);
 
-                    SupplierOrderStatus mappedStatus = mapLegacyStatus(legacyStatus);
-                    
-                    // If status changed, update DB
-                    if (mappedStatus != order.getStatus()) {
-                        order.setStatus(mappedStatus);
+                    if (mapped == null) {
+                        System.out.println("Unexpected StatusCode '" + code + "' for PO "
+                                + order.getPoNumber() + ", flagging for review: " + response.body());
+                        order.setStatus(SupplierOrderStatus.NEEDS_REVIEW);
                         repository.save(order);
-                        
-                        // If DELIVERED, publish event so Inventory can restock
-                        if (mappedStatus == SupplierOrderStatus.DELIVERED) {
+                        continue;
+                    }
+
+                    if (mapped != order.getStatus()) {
+                        order.setStatus(mapped);
+                        repository.save(order);
+
+                        if (mapped == SupplierOrderStatus.DELIVERED) {
+                            System.out.println("PO " + order.getPoNumber() + " DELIVERED! Restocking "
+                                    + order.getUnitsRequested() + " units.");
                             events.publishEvent(new SupplierOrderDeliveredEvent(
-                                    order.getProductId(), 
-                                    order.getUnitsRequested() // Restock the units we originally needed
-                            ));
-                            System.out.println("PO " + order.getPoNumber() + " DELIVERED! Restocking " + order.getUnitsRequested() + " units.");
+                                    order.getProductId(), order.getUnitsRequested()));
                         }
                     }
-                } else if (response.statusCode() == 401) {
+                } else if (http == 404) {
+                    System.out.println("PO " + order.getPoNumber() + " not found at supplier, flagging for review.");
+                    order.setStatus(SupplierOrderStatus.NEEDS_REVIEW);
+                    repository.save(order);
+                } else if (http == 401) {
                     sessionManager.forceRefresh();
+                    break; // retry everything next tick with a fresh session
+                } else if (http == 429) {
+                    System.out.println("Rate limited by LegacySupply, skipping the rest of this tick.");
+                    break;
+                } else {
+                    System.out.println("Supplier error " + http + " while tracking, skipping the rest of this tick.");
+                    break;
                 }
             } catch (Exception e) {
-                System.out.println("Failed to fetch status for PO " + order.getPoNumber() + ": " + e.getMessage());
+                System.out.println("Tracking failed (" + e.getClass().getSimpleName() + "), skipping the rest of this tick.");
+                break; // supplier unreachable: don't burn quota on the remaining orders
             }
         }
     }
 
-    private SupplierOrderStatus mapLegacyStatus(String legacyStatus) {
-        return switch (legacyStatus.toUpperCase()) {
-            case "PROCESSING" -> SupplierOrderStatus.PICKING;
-            case "SHIPPED" -> SupplierOrderStatus.SHIPPED;
-            case "DELIVERED" -> SupplierOrderStatus.DELIVERED;
-            case "CANCELLED" -> SupplierOrderStatus.FAILED;
-            // Part E Requirement: "Handle any status you did not expect"
-            // If they introduce a new status like 'HELD_AT_CUSTOMS', we map it to ACCEPTED to keep it open in our system
-            default -> SupplierOrderStatus.ACCEPTED; 
+    // Manual, section 6: 10 Accepted, 20 Picking, 30 Shipped, 40 Delivered.
+    // Anything else returns null and is handled by the caller.
+    private SupplierOrderStatus mapLegacyStatus(String code) {
+        if (code == null) return null;
+        return switch (code.trim()) {
+            case "10" -> SupplierOrderStatus.ACCEPTED;
+            case "20" -> SupplierOrderStatus.PICKING;
+            case "30" -> SupplierOrderStatus.SHIPPED;
+            case "40" -> SupplierOrderStatus.DELIVERED;
+            default -> null;
         };
     }
 }

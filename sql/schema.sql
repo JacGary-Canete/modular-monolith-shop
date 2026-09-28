@@ -2,6 +2,7 @@
 -- This DROPS and recreates everything from scratch, matching the lab's
 -- requirement that the script fully reproduce the current schema.
 
+drop table if exists supplier_orders;
 drop table if exists notifications;
 drop table if exists order_items;
 drop table if exists orders;
@@ -38,6 +39,7 @@ create table notifications (
 create table supplier_orders (
     id bigserial primary key,
     product_id varchar(20) not null references inventory(product_id),
+    supplier_sku varchar(20) not null,
     buyer_ref varchar(40) not null unique,
     request_id varchar(80) not null unique,
     po_number varchar(40),

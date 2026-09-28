@@ -1,7 +1,8 @@
-package edu.cit.canete.inventory;
+package edu.cit.canete.inventory.event;
 
 import org.springframework.context.event.EventListener;
 import org.springframework.stereotype.Component;
+import edu.cit.canete.inventory.InventoryService;
 import edu.cit.canete.supplier.event.SupplierOrderDeliveredEvent;
 
 @Component

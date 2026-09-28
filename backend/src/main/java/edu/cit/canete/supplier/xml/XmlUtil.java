@@ -15,7 +15,7 @@ public final class XmlUtil {
 
     /** Extracts the text content of the first <tag>...</tag> match, or null. */
     public static String extractTag(String xml, String tag) {
-        Pattern p = Pattern.compile("<" + tag + "[^>]*>(.*?)</" + tag + ">", Pattern.DOTALL);
+        Pattern p = Pattern.compile("<" + tag + "(?:\\s[^>]*)?>(.*?)</" + tag + ">", Pattern.DOTALL);
         Matcher m = p.matcher(xml);
         return m.find() ? m.group(1).trim() : null;
     }

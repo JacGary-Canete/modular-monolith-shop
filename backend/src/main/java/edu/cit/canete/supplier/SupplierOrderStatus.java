@@ -11,5 +11,6 @@ public enum SupplierOrderStatus {
     PICKING,    // StatusCode 20
     SHIPPED,    // StatusCode 30
     DELIVERED,  // StatusCode 40
+    NEEDS_REVIEW,
     FAILED      // could not be placed after retries exhausted
 }
