@@ -14,4 +14,12 @@ public interface SupplierGateway {
      * implementation.
      */
     ReorderResult reorder(String productId, int unitsNeeded);
+
+    /**
+     * True if there is already an open (PENDING/ACCEPTED/PICKING/SHIPPED)
+     * LegacySupply purchase order for this product. Used to decide
+     * whether an out-of-stock Tiangge order can be BACKORDERED instead
+     * of REJECTED (Lab 4, Task 6).
+     */
+    boolean hasOpenOrder(String productId);
 }

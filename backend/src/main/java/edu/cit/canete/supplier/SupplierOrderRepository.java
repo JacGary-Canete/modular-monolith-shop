@@ -5,4 +5,5 @@ import java.util.List;
 
 public interface SupplierOrderRepository extends JpaRepository<SupplierOrder, Long> {
     List<SupplierOrder> findByStatus(SupplierOrderStatus status);
+    boolean existsByProductIdAndStatusIn(String productId, List<SupplierOrderStatus> statuses);
 }

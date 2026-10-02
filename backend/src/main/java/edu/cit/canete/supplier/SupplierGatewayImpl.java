@@ -8,6 +8,7 @@ import java.net.http.HttpResponse;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.UUID;
+import edu.cit.canete.AppInstance;
 import edu.cit.canete.supplier.xml.XmlUtil;
 
 @Service
@@ -17,10 +18,13 @@ class SupplierGatewayImpl implements SupplierGateway {
     private final LegacySupplySessionManager sessionManager;
     private final SupplierOrderRepository repository;
     private final HttpClient httpClient;
+    private final AppInstance appInstance;
 
-    SupplierGatewayImpl(LegacySupplySessionManager sessionManager, SupplierOrderRepository repository) {
+    SupplierGatewayImpl(LegacySupplySessionManager sessionManager, SupplierOrderRepository repository,
+                         AppInstance appInstance) {
         this.sessionManager = sessionManager;
         this.repository = repository;
+        this.appInstance = appInstance;
         this.httpClient = HttpClient.newBuilder()
                 .connectTimeout(Duration.ofSeconds(3))
                 .build();
@@ -72,6 +76,7 @@ class SupplierGatewayImpl implements SupplierGateway {
                         .header("Content-Type", "application/xml")
                         .header("X-LS-Session", token)
                         .header("X-Request-Id", requestId)
+                        .header("X-Client-Instance", appInstance.getInstanceId().toString())
                         .POST(HttpRequest.BodyPublishers.ofString(xmlBody))
                         .build();
 
@@ -115,6 +120,15 @@ class SupplierGatewayImpl implements SupplierGateway {
             }
         }
 
-        return ReorderResult.PENDING;
+         return ReorderResult.PENDING;
     }
-}
+        @Override
+    public boolean hasOpenOrder(String productId) {
+        return repository.existsByProductIdAndStatusIn(productId, java.util.List.of(
+                SupplierOrderStatus.PENDING,
+                SupplierOrderStatus.ACCEPTED,
+                SupplierOrderStatus.PICKING,
+                SupplierOrderStatus.SHIPPED
+        ));
+    }
+}      

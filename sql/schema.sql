@@ -7,6 +7,8 @@ drop table if exists notifications;
 drop table if exists order_items;
 drop table if exists orders;
 drop table if exists inventory;
+drop table if exists channel_orders;
+drop table if exists channel_cursor;
 
 create table inventory (
     product_id varchar(20) primary key,

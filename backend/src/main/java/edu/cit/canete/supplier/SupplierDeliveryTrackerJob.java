@@ -11,6 +11,7 @@ import java.net.http.HttpResponse;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
+import edu.cit.canete.AppInstance;
 import edu.cit.canete.supplier.xml.XmlUtil;
 import edu.cit.canete.supplier.event.SupplierOrderDeliveredEvent;
 
@@ -25,13 +26,16 @@ class SupplierDeliveryTrackerJob {
     private final LegacySupplySessionManager sessionManager;
     private final ApplicationEventPublisher events;
     private final HttpClient httpClient;
+    private final AppInstance appInstance;
 
     SupplierDeliveryTrackerJob(SupplierOrderRepository repository,
                                LegacySupplySessionManager sessionManager,
-                               ApplicationEventPublisher events) {
+                               ApplicationEventPublisher events,
+                               AppInstance appInstance) {
         this.repository = repository;
         this.sessionManager = sessionManager;
         this.events = events;
+        this.appInstance = appInstance;
         this.httpClient = HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(3)).build();
     }
 
@@ -56,6 +60,7 @@ class SupplierDeliveryTrackerJob {
                         .uri(URI.create(BASE_URL + "/purchase-orders/" + order.getPoNumber()))
                         .timeout(Duration.ofSeconds(3))
                         .header("X-LS-Session", token)
+                        .header("X-Client-Instance", appInstance.getInstanceId().toString())
                         .GET()
                         .build();
 

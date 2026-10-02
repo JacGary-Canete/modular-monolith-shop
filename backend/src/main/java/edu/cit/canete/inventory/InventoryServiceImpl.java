@@ -9,6 +9,7 @@ import org.springframework.transaction.annotation.Transactional;
 import edu.cit.canete.supplier.SupplierGateway;
 import edu.cit.canete.supplier.ReorderResult;
 import edu.cit.canete.inventory.event.LowStockEvent;
+import edu.cit.canete.inventory.event.StockChangedEvent;
 
 /**
  * Package-private: only edu.cit.canete.inventory can see this class.
@@ -53,19 +54,23 @@ class InventoryServiceImpl implements InventoryService {
         
         item.setStock(item.getStock() - quantity);
         repository.save(item);
+        events.publishEvent(new StockChangedEvent(item.getProductId(), item.getStock()));
 
         if (item.getStock() < LOW_STOCK_THRESHOLD) {
-            // Keep the existing notification event
             events.publishEvent(new LowStockEvent(item.getProductId(), item.getName(), item.getStock()));
-            
-            // Trigger the automated supplier reorder
-            int unitsNeeded = TARGET_RESTOCK_LEVEL - item.getStock();
-            ReorderResult result = supplierGateway.reorder(item.getProductId(), unitsNeeded);
-            
-            System.out.println("Triggered reorder for " + item.getProductId() + 
-                               ", Units needed: " + unitsNeeded + 
-                               ", Result: " + result);
+
+            // Only reorder if nothing is already in flight for this product -
+            // otherwise every low-stock order re-triggers another purchase
+            // order on top of ones already pending/accepted/shipped.
+            if (!supplierGateway.hasOpenOrder(item.getProductId())) {
+                int unitsNeeded = TARGET_RESTOCK_LEVEL - item.getStock();
+                ReorderResult result = supplierGateway.reorder(item.getProductId(), unitsNeeded);
+                System.out.println("Triggered reorder for " + item.getProductId() +
+                                   ", Units needed: " + unitsNeeded +
+                                   ", Result: " + result);
+            }
         }
+        
         return true;
     }
 
@@ -75,5 +80,6 @@ class InventoryServiceImpl implements InventoryService {
         InventoryItem item = getItem(productId);
         item.setStock(item.getStock() + quantity);
         repository.save(item);
+        events.publishEvent(new StockChangedEvent(item.getProductId(), item.getStock()));
     }
 }

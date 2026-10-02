@@ -108,6 +108,63 @@ public class OrderService {
         order.setStatus(OrderStatus.CANCELLED);
         return orderRepository.save(order);
     }
+        /**
+     * Same as cancelOrder, but tolerates an order that's already
+     * cancelled (confirming twice to Tiangge is safe per the manual) and
+     * always returns the order afterward, so the caller can read its
+     * line items (e.g. to republish stock) regardless of which branch ran.
+     */
+    @Transactional
+    public Order cancelOrderAndReturn(Long orderId) {
+        try {
+            return cancelOrder(orderId);
+        } catch (IllegalStateException alreadyCancelled) {
+            return orderRepository.findById(orderId)
+                    .orElseThrow(() -> new NoSuchElementException("Order not found: " + orderId));
+        }
+    }
+    
+        @Transactional
+    public Order markBackordered(Long orderId, String reason) {
+        Order order = orderRepository.findById(orderId)
+                .orElseThrow(() -> new NoSuchElementException("Order not found: " + orderId));
+        order.setStatus(OrderStatus.BACKORDERED);
+        order.setReason(reason);
+        return orderRepository.save(order);
+    }
+
+    /**
+     * Retries reservation for a backordered order's original items, now
+     * that stock may have arrived. All-or-nothing, same rule as a fresh
+     * order. Returns true if it was just fulfilled.
+     */
+    @Transactional
+    public boolean tryFulfillBackorder(Long orderId) {
+        Order order = orderRepository.findById(orderId)
+                .orElseThrow(() -> new NoSuchElementException("Order not found: " + orderId));
+
+        if (order.getStatus() != OrderStatus.BACKORDERED) {
+            return false;
+        }
+
+        for (OrderItem item : order.getItems()) {
+            InventoryItem current = inventoryService.getItem(item.getProductId());
+            if (current.getStock() < item.getQuantity()) {
+                return false; // still not enough, stay backordered
+            }
+        }
+
+        for (OrderItem item : order.getItems()) {
+            inventoryService.reserve(item.getProductId(), item.getQuantity());
+        }
+
+        order.setStatus(OrderStatus.CONFIRMED);
+        order.setReason(null);
+        orderRepository.save(order);
+
+        events.publishEvent(new OrderPlacedEvent(order.getOrderId()));
+        return true;
+    }
 
     public List<Order> getAllOrders() {
         return orderRepository.findAllByOrderByCreatedAtDesc();

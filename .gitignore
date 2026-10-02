@@ -8,6 +8,7 @@ backend/src/main/resources/application-local.properties
 backend/target/
 backend/run.log
 *.class
+run.log
 
 # Node / Vite
 frontend/node_modules/

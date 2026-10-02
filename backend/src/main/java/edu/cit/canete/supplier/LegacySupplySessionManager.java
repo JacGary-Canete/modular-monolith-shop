@@ -10,6 +10,7 @@ import java.time.Instant;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Component;
 
+import edu.cit.canete.AppInstance;
 import edu.cit.canete.supplier.xml.XmlUtil;
 
 /**
@@ -31,15 +32,18 @@ class LegacySupplySessionManager {
     private final HttpClient httpClient;
     private final String clientId;
     private final String apiKey;
+    private final AppInstance appInstance;
 
     private volatile String currentToken;
     private volatile Instant issuedAt = Instant.EPOCH;
 
     LegacySupplySessionManager(
             @Value("${LS_CLIENT_ID:}") String clientId,
-            @Value("${LS_API_KEY:}") String apiKey) {
+            @Value("${LS_API_KEY:}") String apiKey,
+            AppInstance appInstance) {
         this.clientId = clientId;
         this.apiKey = apiKey;
+        this.appInstance = appInstance;
         this.httpClient = HttpClient.newBuilder()
                 .connectTimeout(Duration.ofSeconds(3))
                 .build();
@@ -67,6 +71,7 @@ class LegacySupplySessionManager {
                 .uri(URI.create(BASE_URL + "/auth/token"))
                 .timeout(Duration.ofSeconds(3))
                 .header("Content-Type", "application/xml")
+                .header("X-Client-Instance", appInstance.getInstanceId().toString())
                 .POST(HttpRequest.BodyPublishers.ofString(body))
                 .build();
 
