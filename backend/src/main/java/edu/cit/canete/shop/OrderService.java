@@ -16,9 +16,6 @@ import edu.cit.canete.shop.event.OrderRejectedEvent;
 @Service
 public class OrderService {
 
-    // Only the InventoryService interface is visible/importable here.
-    // edu.cit.canete.inventory.InventoryServiceImpl is package-private,
-    // so it cannot even be named from this class.
     private final InventoryService inventoryService;
     private final OrderRepository orderRepository;
     private final ApplicationEventPublisher events;
@@ -30,14 +27,8 @@ public class OrderService {
         this.events = events;
     }
 
-    /**
-     * Validates every line item against current stock BEFORE reserving
-     * anything. If any single item would exceed available stock, the whole
-     * order is rejected and nothing is reserved - no partial fulfillment.
-     */
     @Transactional
     public OrderResponse placeOrder(List<OrderItemRequest> itemRequests) {
-        // --- Validation pass: no mutation happens here ---
         List<OrderItemResult> validationResults = new ArrayList<>();
         boolean allValid = true;
         String rejectionReason = null;
@@ -53,9 +44,8 @@ public class OrderService {
             }
         }
 
-        Order order = new Order();
-
         if (!allValid) {
+            Order order = new Order();
             order.setStatus(OrderStatus.REJECTED);
             order.setReason(rejectionReason);
             for (OrderItemRequest req : itemRequests) {
@@ -69,16 +59,57 @@ public class OrderService {
                     validationResults, inventoryService.getAllItems());
         }
 
-        // --- Reservation pass: only runs once every item has passed validation ---
+        // --- Reservation pass ---
+        // The validation pass above is just an early check - the stock it saw
+        // can already be gone by the time we actually reserve, since another
+        // order can run concurrently (different scheduled jobs now run on
+        // separate threads). reserve() re-checks atomically within its own
+        // transaction and is the real source of truth, so if it ever returns
+        // false here, we must not confirm the order: we restock whatever we
+        // already reserved for earlier items in this same order and reject
+        // it instead. Confirming anyway would be promising stock we never
+        // actually hold - an oversell.
         List<OrderItemResult> reservedResults = new ArrayList<>();
+        List<OrderItemRequest> actuallyReserved = new ArrayList<>();
+        boolean reservationFailed = false;
+        String failureReason = null;
+
         for (OrderItemRequest req : itemRequests) {
             boolean reserved = inventoryService.reserve(req.getProductId(), req.getQuantity());
-            // Should always be true here since we just validated, but guard anyway.
-            reservedResults.add(new OrderItemResult(req.getProductId(), req.getQuantity(),
-                    reserved ? "RESERVED" : "INSUFFICIENT_STOCK"));
-            order.addItem(new OrderItem(req.getProductId(), req.getQuantity()));
+            if (!reserved) {
+                reservationFailed = true;
+                failureReason = "Insufficient stock for " + req.getProductId()
+                        + " (lost a race with a concurrent order)";
+                reservedResults.add(new OrderItemResult(req.getProductId(), req.getQuantity(), "INSUFFICIENT_STOCK"));
+                break;
+            }
+            reservedResults.add(new OrderItemResult(req.getProductId(), req.getQuantity(), "RESERVED"));
+            actuallyReserved.add(req);
         }
 
+        if (reservationFailed) {
+            for (OrderItemRequest req : actuallyReserved) {
+                inventoryService.restock(req.getProductId(), req.getQuantity());
+            }
+
+            Order rejected = new Order();
+            rejected.setStatus(OrderStatus.REJECTED);
+            rejected.setReason(failureReason);
+            for (OrderItemRequest req : itemRequests) {
+                rejected.addItem(new OrderItem(req.getProductId(), req.getQuantity()));
+            }
+            orderRepository.save(rejected);
+
+            events.publishEvent(new OrderRejectedEvent(rejected.getOrderId(), failureReason));
+
+            return new OrderResponse(rejected.getOrderId(), rejected.getStatus().name(), rejected.getReason(),
+                    reservedResults, inventoryService.getAllItems());
+        }
+
+        Order order = new Order();
+        for (OrderItemRequest req : itemRequests) {
+            order.addItem(new OrderItem(req.getProductId(), req.getQuantity()));
+        }
         order.setStatus(OrderStatus.CONFIRMED);
         order.setReason(null);
         orderRepository.save(order);
@@ -98,7 +129,6 @@ public class OrderService {
             throw new IllegalStateException("Order " + orderId + " is already cancelled");
         }
 
-        // Only confirmed orders actually reserved stock, so only those need restocking.
         if (order.getStatus() == OrderStatus.CONFIRMED) {
             for (OrderItem item : order.getItems()) {
                 inventoryService.restock(item.getProductId(), item.getQuantity());
@@ -108,12 +138,7 @@ public class OrderService {
         order.setStatus(OrderStatus.CANCELLED);
         return orderRepository.save(order);
     }
-        /**
-     * Same as cancelOrder, but tolerates an order that's already
-     * cancelled (confirming twice to Tiangge is safe per the manual) and
-     * always returns the order afterward, so the caller can read its
-     * line items (e.g. to republish stock) regardless of which branch ran.
-     */
+
     @Transactional
     public Order cancelOrderAndReturn(Long orderId) {
         try {
@@ -123,8 +148,8 @@ public class OrderService {
                     .orElseThrow(() -> new NoSuchElementException("Order not found: " + orderId));
         }
     }
-    
-        @Transactional
+
+    @Transactional
     public Order markBackordered(Long orderId, String reason) {
         Order order = orderRepository.findById(orderId)
                 .orElseThrow(() -> new NoSuchElementException("Order not found: " + orderId));
@@ -133,11 +158,6 @@ public class OrderService {
         return orderRepository.save(order);
     }
 
-    /**
-     * Retries reservation for a backordered order's original items, now
-     * that stock may have arrived. All-or-nothing, same rule as a fresh
-     * order. Returns true if it was just fulfilled.
-     */
     @Transactional
     public boolean tryFulfillBackorder(Long orderId) {
         Order order = orderRepository.findById(orderId)
@@ -150,12 +170,22 @@ public class OrderService {
         for (OrderItem item : order.getItems()) {
             InventoryItem current = inventoryService.getItem(item.getProductId());
             if (current.getStock() < item.getQuantity()) {
-                return false; // still not enough, stay backordered
+                return false;
             }
         }
 
+        List<OrderItem> actuallyReserved = new ArrayList<>();
         for (OrderItem item : order.getItems()) {
-            inventoryService.reserve(item.getProductId(), item.getQuantity());
+            boolean reserved = inventoryService.reserve(item.getProductId(), item.getQuantity());
+            if (!reserved) {
+                // Lost a race after the check above - put back what we
+                // already reserved for this attempt and stay BACKORDERED.
+                for (OrderItem done : actuallyReserved) {
+                    inventoryService.restock(done.getProductId(), done.getQuantity());
+                }
+                return false;
+            }
+            actuallyReserved.add(item);
         }
 
         order.setStatus(OrderStatus.CONFIRMED);
